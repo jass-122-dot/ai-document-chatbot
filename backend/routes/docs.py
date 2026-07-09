@@ -75,7 +75,18 @@ def upload_document():
     collection_name = f"doc_{user_id}_{unique_name.replace('-', '_').replace('.', '_')}"
     collection = get_or_create_collection(collection_name)
     ids = [f"chunk_{i}" for i in range(len(chunks))]
-    collection.add(documents=chunks, ids=ids)
+    #collection.add(documents=chunks, ids=ids)
+    print("1. PDF extracted")
+
+    chunks = chunk_text(text)
+    print("2. Chunks created")
+
+    collection = get_or_create_collection(collection_name)
+    print("3. Collection created")
+
+    # collection.add(documents=chunks, ids=ids)
+
+    print("4. Skipped collection.add")
 
     db = get_db()
     try:
