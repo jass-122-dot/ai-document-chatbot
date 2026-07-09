@@ -66,29 +66,26 @@ def upload_document():
     filepath = os.path.join(Config.UPLOAD_FOLDER, unique_name)
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
     file.save(filepath)
+    print("1. File received")
+    
 
     text = extract_text_from_pdf(filepath)
+    print("2. PDF extracted")
     if not text.strip():
         return jsonify({"error": "Could not extract text from PDF"}), 400
 
     chunks = chunk_text(text)
+    print("3. Chunks created:", len(chunks))
     collection_name = f"doc_{user_id}_{unique_name.replace('-', '_').replace('.', '_')}"
     collection = get_or_create_collection(collection_name)
+    print("4. Collection created")
     ids = [f"chunk_{i}" for i in range(len(chunks))]
-    #collection.add(documents=chunks, ids=ids)
-    print("1. PDF extracted")
-
-    chunks = chunk_text(text)
-    print("2. Chunks created")
-
-    collection = get_or_create_collection(collection_name)
-    print("3. Collection created")
-
-    # collection.add(documents=chunks, ids=ids)
-
-    print("4. Skipped collection.add")
+    collection.add(documents=chunks, ids=ids)
+    print("5. Chunks stored")
+    
 
     db = get_db()
+    print("6. DB opened")
     try:
         cursor = db.execute(
             "INSERT INTO documents (user_id, filename, original_name) VALUES (?, ?, ?)",
