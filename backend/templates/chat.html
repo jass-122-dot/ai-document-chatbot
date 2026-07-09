@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Doc Chatbot - Chat</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/style.css') }}"
+    />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/chat.css') }}"
+    />
+  </head>
+  <body>
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <h2>DocChat AI</h2>
+        <p id="username"></p>
+      </div>
+      <ul>
+        <li><a href=/dashboardy Documents</a></li>
+        <li><a href="#" onclick="logout()">Logout</a></li>
+      </ul>
+    </div>
+    <div class="main-content">
+      <div class="chat-header">
+        <a href="/dashboard"  class="btn-back">Back</a>
+        <h2 id="doc-name">Document Chat</h2>
+      </div>
+      <div id="chat-box" class="chat-box"></div>
+      <div class="chat-input-area">
+        <input
+          type="text"
+          id="question-input"
+          placeholder="Ask a question about this document..."
+          onkeydown="handleEnter(event)"
+        />
+        <button class="btn-send" onclick="sendMessage()">Send</button>
+      </div>
+    </div>
+    <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+  </body>
+</html>
