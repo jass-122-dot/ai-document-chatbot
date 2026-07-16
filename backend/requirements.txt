@@ -8,3 +8,4 @@ chromadb
 PyPDF2
 groq
 gunicorn
+scikit-learn
