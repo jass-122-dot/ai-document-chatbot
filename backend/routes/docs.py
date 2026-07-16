@@ -11,7 +11,7 @@ from sklearn.feature_extraction.text import HashingVectorizer
 # Try PyPDF2 first, then pypdf. If neither is available, PdfReader stays None and
 # extract_text_from_pdf will raise at runtime.
 PdfReader = None
-for mod_name, attr in ("PyPDF2", "pypdf"):
+for mod_name in ("PyPDF2", "pypdf"):
     try:
         mod = importlib.import_module(mod_name)
         PdfReader = getattr(mod, "PdfReader", None)
