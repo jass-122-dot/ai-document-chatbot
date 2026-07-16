@@ -4,14 +4,49 @@ from database import get_db
 from config import Config
 import os
 import uuid
-import PyPDF2
-from groq import Groq
-import chromadb
+import importlib
+from sklearn.feature_extraction.text import HashingVectorizer
+
+# Dynamically import a PDF reader to avoid hard dependency at static-analysis time.
+# Try PyPDF2 first, then pypdf. If neither is available, PdfReader stays None and
+# extract_text_from_pdf will raise at runtime.
+PdfReader = None
+for mod_name, attr in ("PyPDF2", "pypdf"):
+    try:
+        mod = importlib.import_module(mod_name)
+        PdfReader = getattr(mod, "PdfReader", None)
+        if PdfReader:
+            break
+    except Exception:
+        continue
+# Dynamically import Groq to avoid hard dependency at static-analysis time.
+Groq = None
+try:
+    _groq = importlib.import_module("groq")
+    Groq = getattr(_groq, "Groq", None)
+except Exception:
+    Groq = None
+
+# Dynamically import chromadb to avoid hard dependency at static-analysis time.
+chromadb = None
+try:
+    chromadb = importlib.import_module("chromadb")
+except Exception:
+    chromadb = None
 
 docs_bp = Blueprint("docs", __name__)
 
-groq_client = Groq(api_key=Config.GROQ_API_KEY)
+groq_client = Groq(api_key=Config.GROQ_API_KEY) if Groq is not None else None
 chroma_client = chromadb.Client()
+
+# Lightweight, stateless vectorizer - no model download, low memory
+vectorizer = HashingVectorizer(n_features=256, norm="l2", alternate_sign=False)
+
+
+def embed_texts(texts):
+    """Convert a list of strings into fixed-size numeric vectors using hashing.
+    No model download, no neural network - just math. Low memory footprint."""
+    return vectorizer.transform(texts).toarray().tolist()
 
 
 def get_or_create_collection(name):
@@ -24,9 +59,17 @@ def get_or_create_collection(name):
 def extract_text_from_pdf(filepath):
     text = ""
     with open(filepath, "rb") as f:
-        reader = PyPDF2.PdfReader(f)
-        for page in reader.pages:
-            text += page.extract_text() or ""
+        if PdfReader is None:
+            raise RuntimeError("No PDF reader library available. Install PyPDF2 or pypdf.")
+        reader = PdfReader(f)
+        # PdfReader.pages is iterable; page.extract_text() for PyPDF2/pypdf
+        for page in getattr(reader, "pages", []):
+            # newer pypdf uses extract_text(), older PyPDF2 may have extract_text
+            try:
+                extracted = page.extract_text()
+            except Exception:
+                extracted = ""
+            text += extracted or ""
     return text
 
 
@@ -67,7 +110,6 @@ def upload_document():
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
     file.save(filepath)
     print("1. File received")
-    
 
     text = extract_text_from_pdf(filepath)
     print("2. PDF extracted")
@@ -80,9 +122,13 @@ def upload_document():
     collection = get_or_create_collection(collection_name)
     print("4. Collection created")
     ids = [f"chunk_{i}" for i in range(len(chunks))]
-    collection.add(documents=chunks, ids=ids)
+
+    # Compute lightweight hashing-based embeddings ourselves instead of letting
+    # ChromaDB fall back to its default sentence-transformers model (heavy, needs
+    # a model download + ~300-400MB RAM - crashes on Render's 512MB free tier).
+    embeddings = embed_texts(chunks)
+    collection.add(documents=chunks, embeddings=embeddings, ids=ids)
     print("5. Chunks stored")
-    
 
     db = get_db()
     print("6. DB opened")
@@ -147,7 +193,11 @@ def chat():
     collection_name = doc["filename"]
     try:
         collection = get_or_create_collection(collection_name)
-        results = collection.query(query_texts=[question], n_results=3)
+        # Use the same hashing vectorizer to embed the question, then query
+        # ChromaDB with the precomputed vector instead of query_texts (which
+        # would otherwise trigger the default heavy embedding model again).
+        query_embedding = embed_texts([question])[0]
+        results = collection.query(query_embeddings=[query_embedding], n_results=3)
         context = " ".join(results["documents"][0]) if results["documents"] else ""
     except Exception as e:
         return jsonify({"error": f"Search error: {str(e)}"}), 500
@@ -162,6 +212,9 @@ Question: {question}
 Answer clearly and concisely based on the context provided."""
 
     try:
+        if groq_client is None:
+            return jsonify({"error": "AI provider not available"}), 500
+
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
