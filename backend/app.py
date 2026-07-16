@@ -72,15 +72,6 @@ def chat_page():
 with app.app_context():
     init_db()
 
-try:
-    from routes.docs import chroma_client
-    _warmup = chroma_client.get_or_create_collection("warmup")
-    _warmup.add(documents=["warmup"], ids=["0"])
-    chroma_client.delete_collection("warmup")
-    print("ChromaDB embedding model pre-warmed successfully")
-except Exception as e:
-    print("Warmup failed:", e)
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
