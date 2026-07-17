@@ -5,7 +5,9 @@ from config import Config
 import os
 import uuid
 import importlib
-from sklearn.feature_extraction.text import HashingVectorizer
+import requests
+import chromadb
+from chromadb.api.types import EmbeddingFunction
 
 # Dynamically import a PDF reader to avoid hard dependency at static-analysis time.
 # Try PyPDF2 first, then pypdf. If neither is available, PdfReader stays None and
@@ -19,6 +21,7 @@ for mod_name in ("PyPDF2", "pypdf"):
             break
     except Exception:
         continue
+
 # Dynamically import Groq to avoid hard dependency at static-analysis time.
 Groq = None
 try:
@@ -27,33 +30,74 @@ try:
 except Exception:
     Groq = None
 
-# Dynamically import chromadb to avoid hard dependency at static-analysis time.
-chromadb = None
-try:
-    chromadb = importlib.import_module("chromadb")
-except Exception:
-    chromadb = None
-
 docs_bp = Blueprint("docs", __name__)
 
 groq_client = Groq(api_key=Config.GROQ_API_KEY) if Groq is not None else None
 chroma_client = chromadb.Client()
 
-# Lightweight, stateless vectorizer - no model download, low memory
-vectorizer = HashingVectorizer(n_features=256, norm="l2", alternate_sign=False)
+GEMINI_EMBED_MODEL = "gemini-embedding-001"
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
-def embed_texts(texts):
-    """Convert a list of strings into fixed-size numeric vectors using hashing.
-    No model download, no neural network - just math. Low memory footprint."""
-    return vectorizer.transform(texts).toarray().tolist()
+def embed_texts(texts, task_type="RETRIEVAL_DOCUMENT"):
+    """Get embeddings from Google's Gemini Embedding API. Runs on Google's
+    servers, not locally - so this uses almost no RAM on our end, unlike
+    ChromaDB's default sentence-transformers model which needs 300-400MB."""
+    if isinstance(texts, str):
+        texts = [texts]
+
+    headers = {
+        "x-goog-api-key": Config.GEMINI_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    if len(texts) == 1:
+        # Single text - use embedContent
+        url = f"{GEMINI_API_BASE}/{GEMINI_EMBED_MODEL}:embedContent"
+        payload = {
+            "model": f"models/{GEMINI_EMBED_MODEL}",
+            "content": {"parts": [{"text": texts[0]}]},
+            "taskType": task_type,
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        return [data["embedding"]["values"]]
+
+    # Multiple texts - use batchEmbedContents (one request, not one per chunk)
+    url = f"{GEMINI_API_BASE}/{GEMINI_EMBED_MODEL}:batchEmbedContents"
+    payload = {
+        "requests": [
+            {
+                "model": f"models/{GEMINI_EMBED_MODEL}",
+                "content": {"parts": [{"text": t}]},
+                "taskType": task_type,
+            }
+            for t in texts
+        ]
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
+    return [e["values"] for e in data["embeddings"]]
+
+
+class GeminiEmbeddingFunction(EmbeddingFunction):
+    """Passed to ChromaDB so it never tries to instantiate its own default
+    (heavy) embedding model when creating/loading a collection."""
+
+    def __call__(self, input):
+        return embed_texts(input, task_type="RETRIEVAL_DOCUMENT")
+
+
+gemini_ef = GeminiEmbeddingFunction()
 
 
 def get_or_create_collection(name):
     try:
-        return chroma_client.get_collection(name=name)
+        return chroma_client.get_collection(name=name, embedding_function=gemini_ef)
     except:
-        return chroma_client.create_collection(name=name)
+        return chroma_client.create_collection(name=name, embedding_function=gemini_ef)
 
 
 def extract_text_from_pdf(filepath):
@@ -62,9 +106,7 @@ def extract_text_from_pdf(filepath):
         if PdfReader is None:
             raise RuntimeError("No PDF reader library available. Install PyPDF2 or pypdf.")
         reader = PdfReader(f)
-        # PdfReader.pages is iterable; page.extract_text() for PyPDF2/pypdf
         for page in getattr(reader, "pages", []):
-            # newer pypdf uses extract_text(), older PyPDF2 may have extract_text
             try:
                 extracted = page.extract_text()
             except Exception:
@@ -123,10 +165,12 @@ def upload_document():
     print("4. Collection created")
     ids = [f"chunk_{i}" for i in range(len(chunks))]
 
-    # Compute lightweight hashing-based embeddings ourselves instead of letting
-    # ChromaDB fall back to its default sentence-transformers model (heavy, needs
-    # a model download + ~300-400MB RAM - crashes on Render's 512MB free tier).
-    embeddings = embed_texts(chunks)
+    try:
+        embeddings = embed_texts(chunks, task_type="RETRIEVAL_DOCUMENT")
+    except Exception as e:
+        print("GEMINI EMBEDDING ERROR:", str(e))
+        return jsonify({"error": f"Embedding error: {str(e)}"}), 500
+
     collection.add(documents=chunks, embeddings=embeddings, ids=ids)
     print("5. Chunks stored")
 
@@ -193,10 +237,7 @@ def chat():
     collection_name = doc["filename"]
     try:
         collection = get_or_create_collection(collection_name)
-        # Use the same hashing vectorizer to embed the question, then query
-        # ChromaDB with the precomputed vector instead of query_texts (which
-        # would otherwise trigger the default heavy embedding model again).
-        query_embedding = embed_texts([question])[0]
+        query_embedding = embed_texts([question], task_type="RETRIEVAL_QUERY")[0]
         results = collection.query(query_embeddings=[query_embedding], n_results=3)
         context = " ".join(results["documents"][0]) if results["documents"] else ""
     except Exception as e:
