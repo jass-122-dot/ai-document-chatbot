@@ -5,10 +5,22 @@ from config import Config
 import os
 import uuid
 import importlib
-import requests
-import chromadb
-from chromadb.api.types import EmbeddingFunction
 
+requests = None
+try:
+    import requests
+except Exception:
+    requests = None
+
+chromadb = None
+EmbeddingFunction = object
+try:
+    chromadb = importlib.import_module("chromadb")
+    _chromadb_types = importlib.import_module("chromadb.api.types")
+    EmbeddingFunction = getattr(_chromadb_types, "EmbeddingFunction", object)
+except Exception:
+    chromadb = None
+    EmbeddingFunction = object
 # Dynamically import a PDF reader to avoid hard dependency at static-analysis time.
 # Try PyPDF2 first, then pypdf. If neither is available, PdfReader stays None and
 # extract_text_from_pdf will raise at runtime.
@@ -22,18 +34,9 @@ for mod_name in ("PyPDF2", "pypdf"):
     except Exception:
         continue
 
-# Dynamically import Groq to avoid hard dependency at static-analysis time.
-Groq = None
-try:
-    _groq = importlib.import_module("groq")
-    Groq = getattr(_groq, "Groq", None)
-except Exception:
-    Groq = None
-
 docs_bp = Blueprint("docs", __name__)
 
-groq_client = Groq(api_key=Config.GROQ_API_KEY) if Groq is not None else None
-chroma_client = chromadb.Client()
+chroma_client = chromadb.Client() if chromadb is not None else None
 
 GEMINI_EMBED_MODEL = "gemini-embedding-001"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
