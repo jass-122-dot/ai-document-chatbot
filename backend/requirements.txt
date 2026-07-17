@@ -6,6 +6,6 @@ bcrypt
 google-generativeai
 chromadb
 PyPDF2
-groq
 gunicorn
 scikit-learn
+requests
